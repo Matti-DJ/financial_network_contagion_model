@@ -1,0 +1,15 @@
+# Julia generated files
+Manifest.toml
+
+# IDE files
+.idea/
+*.iml
+
+# Build artifacts
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+
+# System files
+.DS_Store
+Thumbs.db
