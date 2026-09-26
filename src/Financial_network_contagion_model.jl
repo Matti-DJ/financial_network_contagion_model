@@ -4,6 +4,7 @@ using Agents
 using UUIDs
 using Random
 using Statistics
+import PlotlyJS
 
 include("Stock.jl")
 include("Share.jl")
@@ -11,6 +12,7 @@ include("Agents/BaseAgent.jl")
 include("OrderBook.jl")
 include("simulation.jl")
 include("Report.jl")
+include("Plot.jl")
 include("Agents/InformedAgent.jl")
 include("Agents/MarketMakerAgent.jl")
 include("Agents/MomentumAgent.jl")
@@ -18,6 +20,7 @@ include("Agents/ReverseMomentumAgent.jl")
 include("Agents/ZeroIntelligenceAgent.jl")
 include("Agents/BiasedStochasticAgent.jl")
 
-export SimulationConfig, Simulation, init_simulation, simulation_step!, run_simulation!, run_simulation, collect_stats, print_stats
+export SimulationConfig, Simulation, init_simulation, simulation_step!, run_simulation!, run_simulation, collect_stats, print_stats,
+    plot_stock, plot_stocks, plot_stock_overview
 
 end # module Financial_network_contagion_model

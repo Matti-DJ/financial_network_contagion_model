@@ -7,7 +7,7 @@ Author: matthiasdejong
 Date: 25.09.26
 =#
 
-const SCRIPT_VERSION = "1.0.0"
+const SCRIPT_VERSION = "1.1.0"
 
 """
 Config of the simulation.
@@ -56,7 +56,7 @@ Base.@kwdef struct SimulationConfig
     stocks::Int = 10
     tick_limit::Int = 1_000_000
 
-    ia::Int = 50
+    ia::Int = 1
     mma::Int = 5
     ma::Int = 100
     rma::Int = 100
@@ -343,6 +343,8 @@ run_simulation(sim_conf::SimulationConfig = SimulationConfig())::NamedTuple = ru
 - `trades` - all trades which happened
 - `shares_traded` - how many shares were traded in total
 - `mean_prices` - the price of every stock at every tick it was traded: Dict{stock name, Vector{price}}
+- `price_history` - the ticks and prices of every stock, starting with the init value at tick 0:
+  Dict{stock name, (ticks = Vector{tick}, prices = Vector{price})}
 - `stocks` - the stats of every stock, sorted by stock number
 - `agents` - the stats of every agent type
 - `wealth_per_type` - the average net worth of each agent type
@@ -351,6 +353,16 @@ function collect_stats(sim::Simulation)::NamedTuple
     book = sim.orderbook
 
     mean_prices = Dict(stock.name => prices for (stock, prices) in book.mean_prices)
+
+    #the price of every stock at the tick of each of its trades
+    price_history = Dict(stock.name => (ticks = Int[0], prices = Float64[stock.init_value]) for stock in keys(sim.stocks))
+    for trade in book.trades
+        if isempty(trade.shares); continue; end
+
+        history = price_history[first(trade.shares).stock_name]
+        push!(history.ticks, trade.tick)
+        push!(history.prices, trade.share_price)
+    end
 
     stocks = [(name = stock.name, init_value = stock.init_value, latest_value = stock.latest_value,
                highest_value = stock.highest_value, lowest_value = stock.lowest_value,
@@ -381,5 +393,6 @@ function collect_stats(sim::Simulation)::NamedTuple
     shares_traded = sum(length(trade.shares) for trade in book.trades; init = 0)
 
     return (ticks = book.ticker, rounds = sim.rounds, trades = book.trades, shares_traded = shares_traded, mean_prices = mean_prices,
+            price_history = price_history,
             stocks = stocks, agents = agents, wealth_per_type = wealth_per_type)
 end
