@@ -43,3 +43,21 @@ end
 function random_price(stock::Stock, price_range::Float64)::Float64
     return stock.latest_value * (1 - price_range + 2 * price_range * rand())
 end
+
+"""
+    Randomly picks a loan decision it can execute and a random amount.
+"""
+function loan_step!(agent::ZeroIntelligenceAgent, sim::Simulation)::ZeroIntelligenceAgent
+    conf = sim.config
+    decision = rand(available_loan_decisions(agent, conf.max_debt_ratio))
+
+    if decision == BORROW
+        amount = rand() * borrow_amount(agent, conf.trade_fraction, conf.max_debt_ratio)
+        place_borrow_request!(sim.loanbook, amount, agent, sim.orderbook.ticker)
+    elseif decision == LEND
+        amount = rand() * lend_amount(agent, conf.trade_fraction)
+        place_lend_offer!(sim.loanbook, amount, agent, sim.orderbook.ticker)
+    end
+
+    return agent
+end

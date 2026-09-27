@@ -22,6 +22,11 @@ const SCRIPT_VERSION = "1.0.0"
 `latest_wealth` - latest wealth of the agent
 `last_arm` - which arm was pulled last
 `last_stock` - which stock was chosen last, nothing before the first pull
+`loan_arm_reward` - how much reward each loan arm yields: Dict{arm, reward}
+`loan_arm_visits` - how often each loan arm is visited: Dict{arm, visits}
+`loan_total_pulls` - total pulls across all loan arms
+`latest_loan_wealth` - the wealth of the agent at its last loan decision
+`last_loan_arm` - which loan arm was pulled last, nothing before the first pull
 """
 @agent struct InformedAgent(BaseAgentFields) <: BaseAgent
     predicted_high::Dict{Stock, Float64}
@@ -34,6 +39,11 @@ const SCRIPT_VERSION = "1.0.0"
     latest_wealth::Float64
     last_arm::Decision
     last_stock::Union{Stock, Nothing}
+    loan_arm_reward::Dict{LoanDecision, Float64}
+    loan_arm_visits::Dict{LoanDecision, Int}
+    loan_total_pulls::Int
+    latest_loan_wealth::Float64
+    last_loan_arm::Union{LoanDecision, Nothing}
 end
 
 """
@@ -138,4 +148,63 @@ function band_agrees(agent::InformedAgent, stock::Stock, arm::Decision)::Bool
     if arm == SELL; return stock.latest_value >= agent.predicted_high[stock]; end
 
     return false
+end
+
+"""
+    Scores the last loan decision, picks a loan arm via UCB1 and executes it if the fair value agrees.
+    borrow -> at least one stock looks cheap, so the cash can be used to buy it
+    lend -> no stock looks cheap, so the cash isn't needed for buying
+"""
+function loan_step!(agent::InformedAgent, sim::Simulation)::InformedAgent
+    conf = sim.config
+    score_last_loan_arm!(agent)
+
+    arm = choose_loan_arm(agent)
+    cheap_stock = any(stock -> band_agrees(agent, stock, BUY), keys(sim.stocks))
+
+    if arm == BORROW && cheap_stock
+        place_borrow_request!(sim.loanbook, borrow_amount(agent, conf.trade_fraction, conf.max_debt_ratio), agent, sim.orderbook.ticker)
+    elseif arm == LEND && !cheap_stock
+        place_lend_offer!(sim.loanbook, lend_amount(agent, conf.trade_fraction), agent, sim.orderbook.ticker)
+    end
+
+    agent.loan_total_pulls += 1
+    agent.last_loan_arm = arm
+    agent.latest_loan_wealth = net_worth(agent)
+
+    return agent
+end
+
+"""
+    Scores the last loan decision with the relative change in wealth since then.
+"""
+function score_last_loan_arm!(agent::InformedAgent)::InformedAgent
+    if agent.last_loan_arm === nothing || agent.latest_loan_wealth <= 0; return agent; end
+
+    reward = (net_worth(agent) - agent.latest_loan_wealth) / agent.latest_loan_wealth
+    agent.loan_arm_visits[agent.last_loan_arm] += 1
+    agent.loan_arm_reward[agent.last_loan_arm] += reward
+
+    return agent
+end
+
+"""
+    Chooses a loan arm via UCB1, the same way as `choose_arm`.
+"""
+function choose_loan_arm(agent::InformedAgent)::LoanDecision
+    best_arm = PASS
+    best_score = -Inf
+
+    for arm in instances(LoanDecision)
+        visits = agent.loan_arm_visits[arm]
+        if visits == 0; return arm; end
+
+        score = agent.loan_arm_reward[arm] / visits + 2 * sqrt(log(agent.loan_total_pulls + 1) / visits)
+        if score > best_score
+            best_score = score
+            best_arm = arm
+        end
+    end
+
+    return best_arm
 end

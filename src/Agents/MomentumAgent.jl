@@ -39,3 +39,21 @@ function agent_step!(agent::MomentumAgent, sim::Simulation)::MomentumAgent
 
     return agent
 end
+
+"""
+    Borrows if a stock went up on each of its last `ticks_to_act` trades, so it has more cash to buy it,
+    lends if a stock went down, the cash from selling isn't needed.
+"""
+function loan_step!(agent::MomentumAgent, sim::Simulation)::MomentumAgent
+    conf = sim.config
+    book = sim.orderbook
+    streaks = [detect_streak(book.mean_prices[stock], agent.ticks_to_act) for stock in keys(sim.stocks)]
+
+    if :up in streaks
+        place_borrow_request!(sim.loanbook, borrow_amount(agent, conf.trade_fraction, conf.max_debt_ratio), agent, book.ticker)
+    elseif :down in streaks
+        place_lend_offer!(sim.loanbook, lend_amount(agent, conf.trade_fraction), agent, book.ticker)
+    end
+
+    return agent
+end

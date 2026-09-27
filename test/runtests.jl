@@ -75,6 +75,64 @@ end
         @test orders[1].shares == shares[3:4]
     end
 
+    @testset "loans" begin
+        book, stock, lender, borrower, shares = test_market()
+        loans = M.LoanBook(0.1, 100)
+        other = M.ZeroIntelligenceAgent(M.base_fields(3, 1_000.0)...)
+
+        #a borrow request rests until a lend offer matches it
+        M.place_borrow_request!(loans, 500.0, borrower, 0)
+        @test length(loans.borrow_requests) == 1
+        M.place_lend_offer!(loans, 300.0, lender, 0)
+        @test isempty(loans.lend_offers)
+        @test loans.borrow_requests[1].amount ≈ 200.0
+        @test lender.cash ≈ 9_700.0 && borrower.cash ≈ 300.0
+        @test lender.debtors == Dict(2 => 300.0) && borrower.lenders == Dict(1 => 300.0)
+        @test M.net_worth(lender) ≈ 10_000.0
+        @test M.net_worth(borrower) ≈ 10 * 100.0
+
+        #a new offer replaces the open request of the agent, an offer the agent can't afford isn't placed
+        M.place_lend_offer!(loans, 1_000.0, borrower, 0)
+        @test length(loans.borrow_requests) == 1 && isempty(loans.lend_offers)
+        M.place_lend_offer!(loans, 100.0, borrower, 0)
+        @test isempty(loans.borrow_requests) && length(loans.lend_offers) == 1
+
+        #nobody borrows from itself
+        M.place_borrow_request!(loans, 50.0, borrower, 0)
+        @test isempty(loans.lend_offers) && length(loans.borrow_requests) == 1
+        M.place_lend_offer!(loans, 100.0, borrower, 0)
+        M.place_borrow_request!(loans, 100.0, other, 0)
+        @test length(loans.active_loans) == 2 && isempty(loans.lend_offers)
+        @test M.available_loan_decisions(M.ZeroIntelligenceAgent(M.base_fields(4, 0.0)...), 0.5) == [M.PASS]
+
+        #nothing is settled before the loan is due
+        M.settle_due_loans!(loans, 99)
+        @test length(loans.active_loans) == 2
+
+        #the borrower pays 330 but only has 200 cash, the lender seizes 2 shares for the rest
+        M.settle_due_loans!(loans, 100)
+        first_loan, second_loan = loans.settled_loans
+        @test first_loan.repaid ≈ 200.0 && first_loan.seized ≈ 200.0 && first_loan.defaulted == 0.0
+        @test lender.cash ≈ 9_900.0
+        @test length(borrower.holdings[stock]) == 8 && length(lender.holdings[stock]) == 2
+        @test all(share -> share.owner_id == lender.id, lender.holdings[stock])
+        @test isempty(lender.debtors) && isempty(borrower.lenders)
+
+        #the second loan is repaid with 10% interest in cash
+        @test second_loan.repaid ≈ 110.0 && second_loan.seized == 0.0
+        @test other.cash ≈ 990.0 && borrower.cash ≈ 110.0
+        @test isempty(borrower.debtors) && isempty(other.lenders)
+
+        #what can't be covered by cash and shares is lost
+        broke = M.ZeroIntelligenceAgent(M.base_fields(5, 0.0)...)
+        M.execute_loan!(loans, lender, broke, 50.0, 100)
+        broke.cash = 10.0
+        M.settle_due_loans!(loans, 200)
+        @test last(loans.settled_loans).repaid ≈ 10.0
+        @test last(loans.settled_loans).defaulted ≈ 45.0
+        @test isempty(broke.lenders) && !haskey(lender.debtors, broke.id)
+    end
+
     @testset "streak" begin
         @test M.detect_streak([1.0, 2.0, 3.0, 4.0], 3) == :up
         @test M.detect_streak([4.0, 3.0, 2.0, 1.0], 3) == :down
@@ -85,7 +143,7 @@ end
     @testset "simulation" begin
         Random.seed!(42)
         config = SimulationConfig(shares_per_stock = 200, stocks = 3, tick_limit = 20_000,
-            ia = 5, mma = 2, ma = 10, rma = 10, zia = 50, bsa = 20, ma_rma_direction = 3)
+            ia = 5, mma = 2, ma = 10, rma = 10, zia = 50, bsa = 20, ma_rma_direction = 3, loan_term = 2_000)
         sim = init_simulation(config)
 
         #every share is owned by at most one agent and the holdings match the owners
@@ -111,6 +169,19 @@ end
         @test sum(length(shares) for agent in sim.agents for shares in values(agent.holdings)) == total_shares
         @test all(agent -> agent.cash >= -1e-6, sim.agents)
 
+        #loans were made and settled, the debt of every agent matches the active loans
+        @test stats.loans.count > 0 && stats.loans.settled > 0
+        @test stats.loans.interest_paid > 0
+        @test stats.loans.count == stats.loans.active + stats.loans.settled
+        for agent in sim.agents
+            @test all(amount -> amount > 0, values(agent.debtors))
+            lent = sum((loan.principal for loan in sim.loanbook.active_loans if loan.lender === agent); init = 0.0)
+            borrowed = sum((loan.principal for loan in sim.loanbook.active_loans if loan.borrower === agent); init = 0.0)
+            @test M.total_lent(agent) ≈ lent atol = 1e-6
+            @test M.total_borrowed(agent) ≈ borrowed atol = 1e-6
+        end
+        @test sum(M.total_lent, sim.agents) ≈ sum(M.total_borrowed, sim.agents)
+
         #the report prints every stock and agent type
         @test [stock.name for stock in stats.stocks] == ["stock1", "stock2", "stock3"]
         @test length(stats.agents) == 6
@@ -120,6 +191,7 @@ end
         @test occursin("SIMULATION RESULTS", report)
         @test all(stock -> occursin(stock.name, report), stats.stocks)
         @test occursin("ZeroIntelligenceAgent", report)
+        @test occursin("LOANS", report)
         @test M.format_number(1234567.891) == "1,234,567.89"
         @test M.format_number(-0.004) == "0.00"
         @test M.format_percent(-12.346) == "-12.35%"

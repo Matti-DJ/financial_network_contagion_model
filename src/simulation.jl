@@ -7,7 +7,7 @@ Author: matthiasdejong
 Date: 25.09.26
 =#
 
-const SCRIPT_VERSION = "1.1.0"
+const SCRIPT_VERSION = "1.2.0"
 
 """
 Config of the simulation.
@@ -49,7 +49,11 @@ Config of the simulation.
 - `zia_price_range` - the zero intelligence agent prices between latest value × (1 ± zia_price_range)
 
 - `trade_fraction` - the fraction of cash / shares an agent uses in a single order
-- `order_lifetime` - after how many ticks an open order is removed from the orderbook
+- `order_lifetime` - after how many ticks an open order / loan offer is removed from the orderbook / loan book
+
+- `interest_rate` - the interest a borrower pays on a loan, 0.1 = 10%
+- `loan_term` - after how many ticks a loan has to be repaid
+- `max_debt_ratio` - an agent can't borrow more than this × its net worth
 """
 Base.@kwdef struct SimulationConfig
     shares_per_stock::Int = 1_000
@@ -88,6 +92,10 @@ Base.@kwdef struct SimulationConfig
 
     trade_fraction::Float64 = 0.1
     order_lifetime::Int = 75_000
+
+    interest_rate::Float64 = 0.1
+    loan_term::Int = 10_000
+    max_debt_ratio::Float64 = 0.5
 end
 
 """
@@ -98,6 +106,7 @@ end
 - `stocks` - all stocks in the simulation with all their shares
 - `agent_types` - all types of agents there are
 - `orderbook` - the orderbook used in the simulation
+- `loanbook` - the loan book which tracks all loans between agents
 - `population_standard_factor` - the average standard factor of all biased stochastic agents
 - `starting_wealth` - the net worth of every agent at the start: Dict{agent id, net worth}
 - `rounds` - how many rounds were simulated, in a round every agent acts once
@@ -108,12 +117,14 @@ mutable struct Simulation
     stocks::Dict{Stock,Vector{Share}}
     agent_types::Vector{Symbol}
     orderbook::OrderBook
+    loanbook::LoanBook
     population_standard_factor::Float64
     starting_wealth::Dict{Int,Float64}
     rounds::Int
 end
 
-Simulation(config::SimulationConfig) = Simulation(config, BaseAgent[], Dict{Stock,Vector{Share}}(), Symbol[], OrderBook(), 1.0, Dict{Int,Float64}(), 0)
+Simulation(config::SimulationConfig) = Simulation(config, BaseAgent[], Dict{Stock,Vector{Share}}(), Symbol[], OrderBook(),
+    LoanBook(config.interest_rate, config.loan_term), 1.0, Dict{Int,Float64}(), 0)
 Simulation() = Simulation(SimulationConfig())
 
 """
@@ -201,9 +212,11 @@ function create_agent(sim::Simulation, agent_type::Symbol, id::Int, cash::Float6
         predicted_low = Dict(stock => stock.init_value * (1 - conf.ia_noise / 100) for stock in keys(sim.stocks))
         arm_reward = Dict(stock => Dict(arm => 0.0 for arm in instances(Decision)) for stock in keys(sim.stocks))
         arm_visits = Dict(stock => Dict(arm => 0 for arm in instances(Decision)) for stock in keys(sim.stocks))
+        loan_arm_reward = Dict(arm => 0.0 for arm in instances(LoanDecision))
+        loan_arm_visits = Dict(arm => 0 for arm in instances(LoanDecision))
 
         return InformedAgent(base..., predicted_high, predicted_low, conf.ia_smoothing_rate, conf.ia_noise,
-            arm_reward, arm_visits, 0, cash, HOLD, nothing)
+            arm_reward, arm_visits, 0, cash, HOLD, nothing, loan_arm_reward, loan_arm_visits, 0, cash, nothing)
     elseif agent_type == :MarketMakerAgent
         return MarketMakerAgent(base..., Dict{Stock,Float64}(), Dict{Stock,Float64}(), Dict{Stock,Float64}(),
             Dict{Stock,Float64}(), Dict{Stock,Float64}(), Dict{Stock,Float64}(), -conf.mma_reprice)
@@ -275,7 +288,10 @@ function init_simulation(sim_conf::SimulationConfig = SimulationConfig())::Simul
     #the wealth is measured after the agents got their shares
     for agent in sim.agents
         sim.starting_wealth[agent.id] = net_worth(agent)
-        if agent isa InformedAgent; agent.latest_wealth = net_worth(agent); end
+        if agent isa InformedAgent
+            agent.latest_wealth = net_worth(agent)
+            agent.latest_loan_wealth = net_worth(agent)
+        end
     end
 
     return sim
@@ -292,21 +308,26 @@ function update_population_standard_factor!(sim::Simulation)::Simulation
 end
 
 """
-    Runs a single round: removes old orders, shuffles the agents so no agent type gets a systematic
-    advantage and lets every agent act once. The ticker is not advanced here, it increases in the
-    orderbook with every order which is put up and every trade which is executed.
+    Runs a single round: removes old orders and loan offers, shuffles the agents so no agent type gets a systematic
+    advantage and lets every agent act once. An agent first decides to borrow / lend and then trades.
+    Loans which are due are settled before every agent acts. The ticker is not advanced here, it increases in the
+    orderbook with every order which is put up and every trade which is executed, loans don't advance it.
     The round stops as soon as the tick limit is reached.
 """
 function simulation_step!(sim::Simulation)::Simulation
     book = sim.orderbook
+    loans = sim.loanbook
 
     sim.rounds += 1
     remove_expired_orders!(book, sim.config.order_lifetime)
+    remove_expired_loan_offers!(loans, book.ticker, sim.config.order_lifetime)
     update_population_standard_factor!(sim)
 
     shuffle!(sim.agents)
     for agent in sim.agents
         if book.ticker >= sim.config.tick_limit; break; end
+        settle_due_loans!(loans, book.ticker)
+        loan_step!(agent, sim)
         agent_step!(agent, sim)
     end
 
@@ -348,6 +369,7 @@ run_simulation(sim_conf::SimulationConfig = SimulationConfig())::NamedTuple = ru
 - `stocks` - the stats of every stock, sorted by stock number
 - `agents` - the stats of every agent type
 - `wealth_per_type` - the average net worth of each agent type
+- `loans` - the stats of all loans, see `collect_loan_stats`
 """
 function collect_stats(sim::Simulation)::NamedTuple
     book = sim.orderbook
@@ -386,6 +408,8 @@ function collect_stats(sim::Simulation)::NamedTuple
                        starting_wealth = starting_wealth, wealth = wealth,
                        change = (wealth - starting_wealth) / starting_wealth * 100,
                        cash = mean(agent.cash for agent in agents_of_type),
+                       lent = mean(total_lent(agent) for agent in agents_of_type),
+                       borrowed = mean(total_borrowed(agent) for agent in agents_of_type),
                        shares_bought = sum(agent.shares_bought for agent in agents_of_type),
                        shares_sold = sum(agent.shares_sold for agent in agents_of_type)))
     end
@@ -394,5 +418,40 @@ function collect_stats(sim::Simulation)::NamedTuple
 
     return (ticks = book.ticker, rounds = sim.rounds, trades = book.trades, shares_traded = shares_traded, mean_prices = mean_prices,
             price_history = price_history,
-            stocks = stocks, agents = agents, wealth_per_type = wealth_per_type)
+            stocks = stocks, agents = agents, wealth_per_type = wealth_per_type, loans = collect_loan_stats(sim.loanbook))
+end
+
+"""
+    Collects the stats of all loans.
+
+# Returns
+- `count` - how many loans were made
+- `volume` - the principal of all loans
+- `active` - how many loans aren't due yet
+- `outstanding` - the principal of all loans which aren't due yet
+- `settled` - how many loans were settled
+- `repaid_in_full` - how many settled loans were fully paid back in cash
+- `repaid` - the cash all borrowers paid back
+- `interest_paid` - the cash borrowers paid on top of the principal
+- `seized` - the value of the shares lenders took from borrowers who couldn't pay in cash
+- `defaults` - how many loans weren't fully covered by cash and shares
+- `defaulted` - the amount lenders lost in those defaults
+- `interest_rate` - the interest of every loan
+"""
+function collect_loan_stats(loans::LoanBook)::NamedTuple
+    settled = loans.settled_loans
+    all_loans = Iterators.flatten((settled, loans.active_loans))
+
+    return (count = length(settled) + length(loans.active_loans),
+            volume = sum(loan.principal for loan in all_loans; init = 0.0),
+            active = length(loans.active_loans),
+            outstanding = sum(loan.principal for loan in loans.active_loans; init = 0.0),
+            settled = length(settled),
+            repaid_in_full = count(loan -> loan.repaid >= amount_due(loan) - 1e-9, settled),
+            repaid = sum(loan.repaid for loan in settled; init = 0.0),
+            interest_paid = sum(max(0.0, loan.repaid - loan.principal) for loan in settled; init = 0.0),
+            seized = sum(loan.seized for loan in settled; init = 0.0),
+            defaults = count(loan -> loan.defaulted > 0, settled),
+            defaulted = sum(loan.defaulted for loan in settled; init = 0.0),
+            interest_rate = loans.interest_rate)
 end

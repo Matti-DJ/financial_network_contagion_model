@@ -77,3 +77,23 @@ function update_standard_factor!(agent::BiasedStochasticAgent)::BiasedStochastic
 
     return agent
 end
+
+"""
+    Picks a loan decision it can execute, the amount is scaled with its latest factor:
+    a factor above 1 makes it borrow / lend more, below 1 less.
+"""
+function loan_step!(agent::BiasedStochasticAgent, sim::Simulation)::BiasedStochasticAgent
+    conf = sim.config
+    decision = rand(available_loan_decisions(agent, conf.max_debt_ratio))
+
+    if decision == BORROW
+        capacity = borrow_capacity(agent, conf.max_debt_ratio)
+        amount = min(capacity, borrow_amount(agent, conf.trade_fraction, conf.max_debt_ratio) * agent.factor)
+        place_borrow_request!(sim.loanbook, amount, agent, sim.orderbook.ticker)
+    elseif decision == LEND
+        amount = min(agent.cash, lend_amount(agent, conf.trade_fraction) * agent.factor)
+        place_lend_offer!(sim.loanbook, amount, agent, sim.orderbook.ticker)
+    end
+
+    return agent
+end

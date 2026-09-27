@@ -33,3 +33,21 @@ function agent_step!(agent::ReverseMomentumAgent, sim::Simulation)::ReverseMomen
 
     return agent
 end
+
+"""
+    Borrows if a stock went down on each of its last `ma_rma_direction` trades, so it has more cash to buy it,
+    lends if a stock went up, the cash from selling isn't needed.
+"""
+function loan_step!(agent::ReverseMomentumAgent, sim::Simulation)::ReverseMomentumAgent
+    conf = sim.config
+    book = sim.orderbook
+    streaks = [detect_streak(book.mean_prices[stock], sim.config.ma_rma_direction) for stock in keys(sim.stocks)]
+
+    if :down in streaks
+        place_borrow_request!(sim.loanbook, borrow_amount(agent, conf.trade_fraction, conf.max_debt_ratio), agent, book.ticker)
+    elseif :up in streaks
+        place_lend_offer!(sim.loanbook, lend_amount(agent, conf.trade_fraction), agent, book.ticker)
+    end
+
+    return agent
+end

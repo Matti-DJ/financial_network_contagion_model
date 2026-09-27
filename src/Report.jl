@@ -7,7 +7,7 @@ Author: matthiasdejong
 Date: 26.09.26
 =#
 
-const SCRIPT_VERSION = "1.0.0"
+const SCRIPT_VERSION = "1.1.0"
 
 const REPORT_WIDTH = 96
 
@@ -77,7 +77,7 @@ end
 
 """
     Prints the collected stats of a simulation as a structured report with an overview,
-    a table of all stocks and a table of all agent types.
+    a table of all stocks, a table of all agent types and the loans between the agents.
 
 # Params
 - `stats` - the stats returned by `run_simulation` / `collect_stats`
@@ -130,12 +130,38 @@ function print_stats(stats::NamedTuple, io::IO = stdout)
                    format_number(agent.wealth),
                    format_percent(agent.change),
                    format_number(agent.cash),
+                   format_number(agent.lent),
+                   format_number(agent.borrowed),
                    format_number(agent.shares_bought; digits = 0),
                    format_number(agent.shares_sold; digits = 0)] for agent in stats.agents]
-    print_table(io, ["type", "count", "start wealth", "end wealth", "change", "cash", "bought", "sold"], agent_rows)
+    print_table(io, ["type", "count", "start wealth", "end wealth", "change", "cash", "lent", "borrowed", "bought", "sold"], agent_rows)
 
     println(io)
-    println(io, " wealth / cash = average per agent, bought / sold = total shares of all agents of that type")
+    println(io, " wealth / cash / lent / borrowed = average per agent, bought / sold = total shares of all agents of that type")
+
+    #loans
+    if haskey(stats, :loans)
+        loans = stats.loans
+        print_section(io, "LOANS")
+        loan_overview = [
+            ("interest rate", format_percent(loans.interest_rate * 100)),
+            ("loans", format_number(loans.count; digits = 0)),
+            ("volume", format_number(loans.volume)),
+            ("active", format_number(loans.active; digits = 0)),
+            ("outstanding", format_number(loans.outstanding)),
+            ("settled", format_number(loans.settled; digits = 0)),
+            ("repaid in full", format_number(loans.repaid_in_full; digits = 0)),
+            ("repaid in cash", format_number(loans.repaid)),
+            ("interest paid", format_number(loans.interest_paid)),
+            ("seized in shares", format_number(loans.seized)),
+            ("defaults", format_number(loans.defaults; digits = 0)),
+            ("lost in defaults", format_number(loans.defaulted)),
+        ]
+        label_width = maximum(length(label) for (label, _) in loan_overview)
+        for (label, value) in loan_overview
+            println(io, " ", rpad(label, label_width), "   ", value)
+        end
+    end
     println(io, "═"^REPORT_WIDTH)
 
     return nothing

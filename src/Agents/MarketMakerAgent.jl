@@ -90,3 +90,25 @@ function update_price_extremes!(agent::MarketMakerAgent, stock::Stock)::MarketMa
 
     return agent
 end
+
+"""
+    Together with its reprice the market maker balances its cash: if its cash is below `trade_fraction` × its
+    net worth it borrows the difference, otherwise it lends a fraction of its cash.
+"""
+function loan_step!(agent::MarketMakerAgent, sim::Simulation)::MarketMakerAgent
+    conf = sim.config
+    book = sim.orderbook
+
+    #only acts when it reprices, agent_step! updates last_reprice afterwards
+    if book.ticker - agent.last_reprice < conf.mma_reprice; return agent; end
+
+    target_cash = net_worth(agent) * conf.trade_fraction
+    if agent.cash < target_cash
+        amount = min(target_cash - agent.cash, borrow_capacity(agent, conf.max_debt_ratio))
+        place_borrow_request!(sim.loanbook, amount, agent, book.ticker)
+    else
+        place_lend_offer!(sim.loanbook, lend_amount(agent, conf.trade_fraction), agent, book.ticker)
+    end
+
+    return agent
+end
