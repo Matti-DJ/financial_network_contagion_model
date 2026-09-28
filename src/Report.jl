@@ -7,7 +7,7 @@ Author: matthiasdejong
 Date: 26.09.26
 =#
 
-const SCRIPT_VERSION = "1.1.0"
+const SCRIPT_VERSION = "1.2.0"
 
 const REPORT_WIDTH = 96
 
@@ -77,7 +77,7 @@ end
 
 """
     Prints the collected stats of a simulation as a structured report with an overview,
-    a table of all stocks, a table of all agent types and the loans between the agents.
+    a table of all stocks, a table of all agent types, the loans between the agents and the fees they paid.
 
 # Params
 - `stats` - the stats returned by `run_simulation` / `collect_stats`
@@ -132,12 +132,13 @@ function print_stats(stats::NamedTuple, io::IO = stdout)
                    format_number(agent.cash),
                    format_number(agent.lent),
                    format_number(agent.borrowed),
+                   format_number(agent.fees_paid),
                    format_number(agent.shares_bought; digits = 0),
                    format_number(agent.shares_sold; digits = 0)] for agent in stats.agents]
-    print_table(io, ["type", "count", "start wealth", "end wealth", "change", "cash", "lent", "borrowed", "bought", "sold"], agent_rows)
+    print_table(io, ["type", "count", "start wealth", "end wealth", "change", "cash", "lent", "borrowed", "fees", "bought", "sold"], agent_rows)
 
     println(io)
-    println(io, " wealth / cash / lent / borrowed = average per agent, bought / sold = total shares of all agents of that type")
+    println(io, " wealth / cash / lent / borrowed / fees = average per agent, bought / sold = total shares of all agents of that type")
 
     #loans
     if haskey(stats, :loans)
@@ -156,9 +157,27 @@ function print_stats(stats::NamedTuple, io::IO = stdout)
             ("seized in shares", format_number(loans.seized)),
             ("defaults", format_number(loans.defaults; digits = 0)),
             ("lost in defaults", format_number(loans.defaulted)),
+            ("loan fees", format_number(loans.fees)),
         ]
         label_width = maximum(length(label) for (label, _) in loan_overview)
         for (label, value) in loan_overview
+            println(io, " ", rpad(label, label_width), "   ", value)
+        end
+    end
+
+    #fees
+    if haskey(stats, :fees)
+        fees = stats.fees
+        print_section(io, "FEES")
+        fee_overview = [
+            ("trade fee", format_percent(fees.trade_fee * 100) * " per side"),
+            ("loan fee", format_percent(fees.loan_fee * 100) * " of the principal"),
+            ("trading fees", format_number(fees.trading)),
+            ("loan fees", format_number(fees.loans)),
+            ("total fees", format_number(fees.total)),
+        ]
+        label_width = maximum(length(label) for (label, _) in fee_overview)
+        for (label, value) in fee_overview
             println(io, " ", rpad(label, label_width), "   ", value)
         end
     end

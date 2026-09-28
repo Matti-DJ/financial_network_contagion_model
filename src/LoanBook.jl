@@ -8,7 +8,7 @@ Author: matthiasdejong
 Date: 27.09.26
 =#
 
-const SCRIPT_VERSION = "1.0.0"
+const SCRIPT_VERSION = "1.1.0"
 
 #loans smaller than this are not made
 const MIN_LOAN = 1.0
@@ -39,6 +39,7 @@ end
 - `repaid` - how much cash the borrower paid back
 - `seized` - the value of the shares the lender took because the borrower couldn't pay in cash
 - `defaulted` - how much of the loan was lost because the borrower couldn't pay at all
+- `fee` - the origination fee the borrower paid when the loan was made
 - `settled` - if the loan was settled
 """
 mutable struct Loan
@@ -52,6 +53,7 @@ mutable struct Loan
     repaid::Float64
     seized::Float64
     defaulted::Float64
+    fee::Float64
     settled::Bool
 end
 
@@ -68,6 +70,8 @@ amount_due(loan::Loan)::Float64 = loan.principal * (1 + loan.interest_rate)
 - `settled_loans` - all loans which were settled
 - `interest_rate` - the interest of every loan, 0.1 = 10%
 - `loan_term` - after how many ticks a loan has to be repaid
+- `fee_rate` - the origination fee the borrower pays on the principal when the loan is made, 0.01 = 1%
+- `fees_collected` - all loan fees the borrowers paid, the fees leave the market
 """
 mutable struct LoanBook
     lend_offers::Vector{LoanOffer}
@@ -76,13 +80,17 @@ mutable struct LoanBook
     settled_loans::Vector{Loan}
     interest_rate::Float64
     loan_term::Int
+    fee_rate::Float64
+    fees_collected::Float64
 end
 
-LoanBook(interest_rate::Float64, loan_term::Int) = LoanBook(LoanOffer[], LoanOffer[], Loan[], Loan[], interest_rate, loan_term)
+LoanBook(interest_rate::Float64, loan_term::Int, fee_rate::Float64 = 0.0) =
+    LoanBook(LoanOffer[], LoanOffer[], Loan[], Loan[], interest_rate, loan_term, fee_rate, 0.0)
 LoanBook() = LoanBook(0.1, 10_000)
 
 """
     Makes a loan: moves the cash from the lender to the borrower and records the debt on both sides.
+    The borrower pays the origination fee out of the borrowed cash, it still owes the whole principal.
 
 # Params
 - `loans` - the loan book which tracks the loan
@@ -95,10 +103,14 @@ function execute_loan!(loans::LoanBook, lender::BaseAgent, borrower::BaseAgent, 
     lender.cash -= amount
     borrower.cash += amount
 
+    fee = amount * loans.fee_rate
+    pay_fee!(borrower, fee)
+    loans.fees_collected += fee
+
     lender.debtors[borrower.id] = get(lender.debtors, borrower.id, 0.0) + amount
     borrower.lenders[lender.id] = get(borrower.lenders, lender.id, 0.0) + amount
 
-    loan = Loan(uuid4(), lender, borrower, amount, loans.interest_rate, tick, tick + loans.loan_term, 0.0, 0.0, 0.0, false)
+    loan = Loan(uuid4(), lender, borrower, amount, loans.interest_rate, tick, tick + loans.loan_term, 0.0, 0.0, 0.0, fee, false)
     push!(loans.active_loans, loan)
 
     return loans

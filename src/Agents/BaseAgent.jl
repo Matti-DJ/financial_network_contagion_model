@@ -9,7 +9,7 @@ Author: matthiasdejong
 Date: 19.09.26
 =#
 
-const SCRIPT_VERSION = "1.0.0"
+const SCRIPT_VERSION = "1.1.0"
 
 """
     the market decisions every agent can make
@@ -38,6 +38,7 @@ abstract type BaseAgent <: AbstractAgent end
 - `sell_orders:` how many sell orders the agent has made
 - `debtors:` how much money each debtor owes the agent: `Dict{debtor id, amount}`
 - `lenders:` how much money the agent borrowed from each lender: `Dict{lender id, amount}`
+- `fees_paid:` all trading and loan fees the agent paid
 """
 @agent struct BaseAgentFields(NoSpaceAgent) <: BaseAgent
     cash::Float64
@@ -50,6 +51,7 @@ abstract type BaseAgent <: AbstractAgent end
     sell_orders::Int
     debtors::Dict{Int,Float64}
     lenders::Dict{Int,Float64}
+    fees_paid::Float64
 end
 
 """
@@ -61,7 +63,7 @@ end
 - `cash` - the starting cash of the new agent
 """
 function base_fields(id::Int, cash::Float64)::Tuple
-    return (id, cash, Dict{Stock,Vector{Share}}(), 0, 0, 0.0, 0.0, 0, 0, Dict{Int,Float64}(), Dict{Int,Float64}())
+    return (id, cash, Dict{Stock,Vector{Share}}(), 0, 0, 0.0, 0.0, 0, 0, Dict{Int,Float64}(), Dict{Int,Float64}(), 0.0)
 end
 
 """
@@ -86,6 +88,16 @@ function record_buy_order!(agent::BaseAgent, shares::Vector{Share}, stock::Stock
         assign_new_owner!(share, agent.id)
     end
     append!(get!(agent.holdings, stock, Share[]), shares)
+
+    return agent
+end
+
+"""
+    Takes a fee from the cash of the agent.
+"""
+function pay_fee!(agent::BaseAgent, fee::Float64)::BaseAgent
+    agent.cash -= fee
+    agent.fees_paid += fee
 
     return agent
 end

@@ -7,7 +7,7 @@ Author: matthiasdejong
 Date: 25.09.26
 =#
 
-const SCRIPT_VERSION = "1.2.0"
+const SCRIPT_VERSION = "1.3.0"
 
 """
 Config of the simulation.
@@ -54,6 +54,9 @@ Config of the simulation.
 - `interest_rate` - the interest a borrower pays on a loan, 0.1 = 10%
 - `loan_term` - after how many ticks a loan has to be repaid
 - `max_debt_ratio` - an agent can't borrow more than this × its net worth
+
+- `trade_fee` - the fee the buyer and the seller each pay on the volume of a trade, 0.001 = 0.1%
+- `loan_fee` - the origination fee a borrower pays on the principal of a loan, 0.01 = 1%
 """
 Base.@kwdef struct SimulationConfig
     shares_per_stock::Int = 1_000
@@ -96,6 +99,9 @@ Base.@kwdef struct SimulationConfig
     interest_rate::Float64 = 0.1
     loan_term::Int = 10_000
     max_debt_ratio::Float64 = 0.5
+
+    trade_fee::Float64 = 0.001
+    loan_fee::Float64 = 0.01
 end
 
 """
@@ -123,8 +129,8 @@ mutable struct Simulation
     rounds::Int
 end
 
-Simulation(config::SimulationConfig) = Simulation(config, BaseAgent[], Dict{Stock,Vector{Share}}(), Symbol[], OrderBook(),
-    LoanBook(config.interest_rate, config.loan_term), 1.0, Dict{Int,Float64}(), 0)
+Simulation(config::SimulationConfig) = Simulation(config, BaseAgent[], Dict{Stock,Vector{Share}}(), Symbol[], OrderBook(config.trade_fee),
+    LoanBook(config.interest_rate, config.loan_term, config.loan_fee), 1.0, Dict{Int,Float64}(), 0)
 Simulation() = Simulation(SimulationConfig())
 
 """
@@ -370,6 +376,7 @@ run_simulation(sim_conf::SimulationConfig = SimulationConfig())::NamedTuple = ru
 - `agents` - the stats of every agent type
 - `wealth_per_type` - the average net worth of each agent type
 - `loans` - the stats of all loans, see `collect_loan_stats`
+- `fees` - the fee rates and all fees the agents paid for trades and loans
 """
 function collect_stats(sim::Simulation)::NamedTuple
     book = sim.orderbook
@@ -410,15 +417,20 @@ function collect_stats(sim::Simulation)::NamedTuple
                        cash = mean(agent.cash for agent in agents_of_type),
                        lent = mean(total_lent(agent) for agent in agents_of_type),
                        borrowed = mean(total_borrowed(agent) for agent in agents_of_type),
+                       fees_paid = mean(agent.fees_paid for agent in agents_of_type),
                        shares_bought = sum(agent.shares_bought for agent in agents_of_type),
                        shares_sold = sum(agent.shares_sold for agent in agents_of_type)))
     end
 
     shares_traded = sum(length(trade.shares) for trade in book.trades; init = 0)
 
+    fees = (trade_fee = book.fee_rate, loan_fee = sim.loanbook.fee_rate, trading = book.fees_collected,
+            loans = sim.loanbook.fees_collected, total = book.fees_collected + sim.loanbook.fees_collected)
+
     return (ticks = book.ticker, rounds = sim.rounds, trades = book.trades, shares_traded = shares_traded, mean_prices = mean_prices,
             price_history = price_history,
-            stocks = stocks, agents = agents, wealth_per_type = wealth_per_type, loans = collect_loan_stats(sim.loanbook))
+            stocks = stocks, agents = agents, wealth_per_type = wealth_per_type, loans = collect_loan_stats(sim.loanbook),
+            fees = fees)
 end
 
 """
@@ -436,6 +448,7 @@ end
 - `seized` - the value of the shares lenders took from borrowers who couldn't pay in cash
 - `defaults` - how many loans weren't fully covered by cash and shares
 - `defaulted` - the amount lenders lost in those defaults
+- `fees` - the origination fees borrowers paid
 - `interest_rate` - the interest of every loan
 """
 function collect_loan_stats(loans::LoanBook)::NamedTuple
@@ -453,5 +466,6 @@ function collect_loan_stats(loans::LoanBook)::NamedTuple
             seized = sum(loan.seized for loan in settled; init = 0.0),
             defaults = count(loan -> loan.defaulted > 0, settled),
             defaulted = sum(loan.defaulted for loan in settled; init = 0.0),
+            fees = loans.fees_collected,
             interest_rate = loans.interest_rate)
 end

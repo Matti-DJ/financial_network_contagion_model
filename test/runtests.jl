@@ -133,6 +133,48 @@ end
         @test isempty(broke.lenders) && !haskey(lender.debtors, broke.id)
     end
 
+    @testset "fees" begin
+        book, stock, buyer, seller, shares = test_market()
+        book.fee_rate = 0.01
+
+        #both sides pay 1% of the trade volume, the fees leave the market
+        M.place_sell_order!(book, shares, stock, 100.0, seller)
+        M.place_buy_order!(book, 4, stock, 100.0, buyer)
+        @test buyer.cash ≈ 10_000.0 - 400.0 - 4.0
+        @test seller.cash ≈ 400.0 - 4.0
+        @test buyer.fees_paid ≈ 4.0 && seller.fees_paid ≈ 4.0
+        @test book.fees_collected ≈ 8.0
+
+        #a buyer who can pay the shares but not the fee can't place the order
+        buyer.cash = 100.0
+        ticker = book.ticker
+        M.place_buy_order!(book, 1, stock, 100.0, buyer)
+        @test book.ticker == ticker && buyer.cash == 100.0
+
+        #a resting buy order only fills as many shares as the buyer can afford with the fee
+        buyer.cash = 250.0
+        M.place_buy_order!(book, 2, stock, 90.0, buyer)
+        @test length(book.buy_orders[stock]) == 1
+        buyer.cash = 150.0
+        M.cancel_orders!(book, seller)
+        M.place_sell_order!(book, seller.holdings[stock][1:2], stock, 90.0, seller)
+        @test length(last(book.trades).shares) == 1
+        @test buyer.cash ≈ 150.0 - 90.0 * 1.01
+    end
+
+    @testset "loan fees" begin
+        lender = M.ZeroIntelligenceAgent(M.base_fields(1, 1_000.0)...)
+        borrower = M.ZeroIntelligenceAgent(M.base_fields(2, 0.0)...)
+        loans = M.LoanBook(0.1, 100, 0.01)
+
+        #the borrower pays 1% of the principal up front but still owes the whole principal
+        M.execute_loan!(loans, lender, borrower, 500.0, 0)
+        @test lender.cash ≈ 500.0 && borrower.cash ≈ 495.0
+        @test borrower.fees_paid ≈ 5.0 && loans.fees_collected ≈ 5.0
+        @test borrower.lenders == Dict(1 => 500.0) && first(loans.active_loans).fee ≈ 5.0
+        @test M.collect_loan_stats(loans).fees ≈ 5.0
+    end
+
     @testset "streak" begin
         @test M.detect_streak([1.0, 2.0, 3.0, 4.0], 3) == :up
         @test M.detect_streak([4.0, 3.0, 2.0, 1.0], 3) == :down
@@ -164,8 +206,11 @@ end
         @test issorted([trade.tick for trade in stats.trades])
         @test all(stock -> length(stats.mean_prices[stock.name]) == stock.times_traded + 1, stats.stocks)
 
-        #no cash or shares are created or lost and no agent has negative cash
-        @test sum(agent.cash for agent in sim.agents) ≈ total_cash
+        #no cash or shares are created or lost, the only cash which leaves the market are the fees
+        #and no agent has negative cash
+        @test stats.fees.trading > 0 && stats.fees.loans > 0
+        @test stats.fees.total ≈ sum(agent.fees_paid for agent in sim.agents)
+        @test sum(agent.cash for agent in sim.agents) + stats.fees.total ≈ total_cash
         @test sum(length(shares) for agent in sim.agents for shares in values(agent.holdings)) == total_shares
         @test all(agent -> agent.cash >= -1e-6, sim.agents)
 
@@ -192,6 +237,7 @@ end
         @test all(stock -> occursin(stock.name, report), stats.stocks)
         @test occursin("ZeroIntelligenceAgent", report)
         @test occursin("LOANS", report)
+        @test occursin("FEES", report)
         @test M.format_number(1234567.891) == "1,234,567.89"
         @test M.format_number(-0.004) == "0.00"
         @test M.format_percent(-12.346) == "-12.35%"

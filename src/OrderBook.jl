@@ -7,7 +7,7 @@ Author: matthiasdejong
 Date: 22.09.26
 =#
 
-const SCRIPT_VERSION = "1.0.0"
+const SCRIPT_VERSION = "1.1.0"
 
 """
     The buy order is placed buy someone who wants to buy a quantity of items.
@@ -71,6 +71,8 @@ end
 - `trades` - a list of all trades which happened in the simulation
 - `mean_prices` - the price of each stock at every tick it was traded: Dict{Stock, Vector{price}}.
   A tick has at most one trade, so the mean price of a tick is the price of its trade.
+- `fee_rate` - the fee the buyer and the seller each pay on the volume of a trade, 0.001 = 0.1%
+- `fees_collected` - all trading fees the agents paid, the fees leave the market
 """
 mutable struct OrderBook
     buy_orders::Dict{Stock,Vector{BuyOrder}}
@@ -78,15 +80,24 @@ mutable struct OrderBook
     ticker::Int
     trades::Vector{Trade}
     mean_prices::Dict{Stock,Vector{Float64}}
+    fee_rate::Float64
+    fees_collected::Float64
 end
 
-OrderBook() = OrderBook(
+OrderBook(fee_rate::Float64 = 0.0) = OrderBook(
     Dict{Stock,Vector{BuyOrder}}(),
     Dict{Stock,Vector{SellOrder}}(),
     0,
     Trade[],
     Dict{Stock,Vector{Float64}}(),
+    fee_rate,
+    0.0,
 )
+
+"""
+    Returns how many shares a buyer can afford at a price, including the trading fee.
+"""
+affordable_quantity(book::OrderBook, buyer::BaseAgent, price::Float64)::Int = floor(Int, buyer.cash / (price * (1 + book.fee_rate)))
 
 #sort keys: best price first, then earliest tick
 buy_order_key(order::BuyOrder) = (-order.max_price, order.tick)
@@ -152,7 +163,7 @@ end
 
 """
     Executes a trade between a buyer and a seller. Every trade is a tick. Updates the stock price,
-    records the trade on both agents and tracks it.
+    records the trade on both agents, charges both of them the trading fee and tracks it.
 
 # Params
 - `book` - the orderbook in which the trade happens
@@ -173,6 +184,12 @@ function execute_trade!(book::OrderBook, buyer::BaseAgent, seller::BaseAgent, sh
     _ , sold_shares = record_sell_order!(seller, shares, stock)
     record_buy_order!(buyer, sold_shares, stock)
 
+    #the buyer and the seller each pay the fee on the volume of the trade
+    fee = length(sold_shares) * price * book.fee_rate
+    pay_fee!(buyer, fee)
+    pay_fee!(seller, fee)
+    book.fees_collected += 2 * fee
+
     #tracks trade
     track_trade!(book, buyer.id, seller.id, sold_shares, price, book.ticker)
 
@@ -191,8 +208,8 @@ whatever can't be matched is added to the order book. It also directly updates t
 - `buyer` - the agent who placed the order
 """
 function place_buy_order!(book::OrderBook, quantity::Int, stock::Stock, max_price::Float64, buyer::BaseAgent)::OrderBook
-    #checks if buyer can afford the shares
-    if quantity <= 0 || max_price <= 0 || buyer.cash < (max_price*quantity); return book; end
+    #checks if buyer can afford the shares and the fee
+    if quantity <= 0 || max_price <= 0 || buyer.cash < max_price * quantity * (1 + book.fee_rate); return book; end
 
     #putting up an order is a tick
     book.ticker += 1
@@ -215,7 +232,7 @@ function place_buy_order!(book::OrderBook, quantity::Int, stock::Stock, max_pric
 
         #the trade happens at the price of the resting order
         price = sell_order.min_price
-        amount = min(order.quantity, length(sell_order.shares), floor(Int, buyer.cash / price))
+        amount = min(order.quantity, length(sell_order.shares), affordable_quantity(book, buyer, price))
         if amount == 0; break; end
 
         traded_shares = splice!(sell_order.shares, 1:amount)
@@ -274,7 +291,7 @@ function place_sell_order!(book::OrderBook, shares::Vector{Share}, stock::Stock,
 
         #the trade happens at the price of the resting order
         price = buy_order.max_price
-        amount = min(buy_order.quantity, length(order.shares), floor(Int, buy_order.new_owner.cash / price))
+        amount = min(buy_order.quantity, length(order.shares), affordable_quantity(book, buy_order.new_owner, price))
 
         #deletes the buy order if the buyer can't afford it anymore
         if amount == 0; deleteat!(buy_orders, i); continue; end
